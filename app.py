@@ -43,6 +43,7 @@ if 'daily_plans' not in st.session_state:
 # CF Area Configuration
 CF_AREAS = ["CRF", "Pre-Assembly", "Cabinet Foaming", "Door Foaming", "CF Final Line"]
 WD_AREAS = ["WD Final Line"]
+ALL_AREAS = CF_AREAS + WD_AREAS
 
 # --- NAVIGATION ---
 menu = st.radio("Select Module:", 
@@ -296,8 +297,8 @@ elif menu == "2. Production Entry":
                         for entry in st.session_state[f'temp_entries_{area}']:
                             st.session_state.production_data.append({
                                 "Date": timestamp,
-                                        "Area": area,
-                                        "Supervisor": entry['Supervisor'],
+                                "Area": area,
+                                "Supervisor": entry['Supervisor'],
                                         "Category": entry['Category'],
                                         "Model": entry['Model'],
                                         "Actual": entry['Quantity'],
@@ -318,7 +319,7 @@ elif menu == "3. Plan Vs Actual Report":
     
     tab_wip, tab_daily, tab_monthly = st.tabs(["WIP Status", "Daily Achievement", "Monthly Report"])
 
-    # --- WIP STATUS (Between respective areas, simplified grid) ---
+    # --- WIP STATUS (Grid View) ---
     with tab_wip:
         st.subheader("Work In Progress (WIP) - Grid View")
         st.info("Select a category and date. Grid shows Plan / Actual / Achievement% for areas and WIP between them.")
@@ -367,7 +368,6 @@ elif menu == "3. Plan Vs Actual Report":
                 # Row 1: Pre-Assembly
                 plan_pa = area_plan.get("Pre-Assembly", 0)
                 act_pa = area_actual.get("Pre-Assembly", 0)
-                # Achievement: if plan == 0 -> show 0.0% when both zero, else show 100% if act>0 (treated as fully achieved/over)
                 if plan_pa == 0:
                     ach_pa = 0.0 if act_pa == 0 else 100.0
                 else:
@@ -376,10 +376,10 @@ elif menu == "3. Plan Vs Actual Report":
                 # Row 2: WIP between Pre-Assembly and Cabinet Foaming
                 plan_wip1 = area_plan.get("Pre-Assembly", 0) - area_plan.get("Cabinet Foaming", 0)
                 act_wip1 = area_actual.get("Pre-Assembly", 0) - area_actual.get("Cabinet Foaming", 0)
-                # normalize plan_wip1 display (allow negative); achievement calculation:
                 if plan_wip1 == 0:
                     ach_wip1 = 0.0 if act_wip1 == 0 else 100.0
                 else:
+                    # avoid division by zero and preserve sign for negative plan_wip1
                     ach_wip1 = (act_wip1 / plan_wip1) * 100.0
                 rows.append([f"WIP (Pre-Assembly → Cabinet Foaming)", plan_wip1, act_wip1, ach_wip1])
                 # Row 3: Cabinet Foaming
@@ -415,7 +415,6 @@ elif menu == "3. Plan Vs Actual Report":
 
                 # Styling: color Achievement % and Plan/Act cells for quick visualization
                 def style_row(row):
-                    # returns list of style strings for each column in the order of DataFrame columns
                     plan = row["Plan"]
                     act = row["Act"]
                     ach = row["Achievement %"]
@@ -425,12 +424,16 @@ elif menu == "3. Plan Vs Actual Report":
                     # Plan: light blue background
                     styles.append("background-color: #e7f3ff; color: #0b5394; font-weight: 600;")
                     # Act: light gray or green if >= plan
-                    if act >= plan and plan > 0:
-                        styles.append("background-color: #d4edda; color: #155724; font-weight: 600;")  # green
-                    elif act == 0:
-                        styles.append("background-color: #f0f0f0; color: #6c757d;")
+                    if plan > 0:
+                        if act >= plan:
+                            styles.append("background-color: #d4edda; color: #155724; font-weight: 600;")  # green
+                        elif act == 0:
+                            styles.append("background-color: #f0f0f0; color: #6c757d;")
+                        else:
+                            styles.append("background-color: #fff3cd; color: #856404;")  # amber for below plan
                     else:
-                        styles.append("background-color: #fff3cd; color: #856404;")  # amber for below plan
+                        # when plan is zero, use neutral background
+                        styles.append("background-color: #f0f0f0; color: #6c757d;")
                     # Achievement %: color based on thresholds
                     try:
                         val = float(ach)
@@ -447,7 +450,6 @@ elif menu == "3. Plan Vs Actual Report":
                     return styles
 
                 styled = wip_grid.style.apply(style_row, axis=1)
-                # Format Achievement column to show one decimal and a percent sign
                 styled = styled.format({"Achievement %": "{:.1f}%"})
                 st.markdown(f"### WIP Grid for {category} on {date_str}")
                 st.dataframe(styled, hide_index=True)
@@ -455,14 +457,17 @@ elif menu == "3. Plan Vs Actual Report":
     # --- DAILY ACHIEVEMENT ---
     with tab_daily:
         st.subheader("Daily Achievement Report")
-        
+        # New filter: Date and Area
         report_date = st.date_input("Select Date", datetime.now().date(), key="daily_date")
+        area_filter = st.selectbox("Select Area", ["All"] + ALL_AREAS, key="daily_area_filter")
         
         # FIX FOR REPORT DISPLAY: Ensure correct filtering and grouping
         daily_df = pd.DataFrame(st.session_state.production_data)
         if not daily_df.empty:
             daily_df['Report_Date'] = pd.to_datetime(daily_df['Date']).dt.strftime("%Y-%m-%d")
             filtered_df = daily_df[daily_df['Report_Date'] == report_date.strftime("%Y-%m-%d")]
+            if area_filter != "All":
+                filtered_df = filtered_df[filtered_df['Area'] == area_filter]
             
             if not filtered_df.empty:
                 # Group by Model and Area for a clear view of daily output across the lines
@@ -475,22 +480,24 @@ elif menu == "3. Plan Vs Actual Report":
                 graph_data = model_summary.groupby('Model')['Total Actual Qty'].sum()
                 st.bar_chart(graph_data)
             else:
-                st.info("No production data found for this date.")
+                st.info("No production data found for this date/area.")
         else:
             st.info("No production data entered yet.")
 
     # --- MONTHLY REPORT ---
     with tab_monthly:
         st.subheader("Monthly Report (Plan vs Actual)")
-        
-        # Use a full date picker but extract YYYY-MM for monthly filtering
-        month_filter = st.date_input("Select Month", datetime.now().date(), key="monthly_date")
+        # New filter: Date (month) and Area
+        month_filter = st.date_input("Select Month (pick any date in month)", datetime.now().date(), key="monthly_date")
         month_str = month_filter.strftime("%Y-%m")
+        area_filter_month = st.selectbox("Select Area", ["All"] + ALL_AREAS, key="monthly_area_filter")
         
         monthly_df = pd.DataFrame(st.session_state.production_data)
         if not monthly_df.empty:
             monthly_df['Report_Month'] = pd.to_datetime(monthly_df['Date']).dt.strftime("%Y-%m")
             monthly_filtered = monthly_df[monthly_df['Report_Month'] == month_str]
+            if area_filter_month != "All":
+                monthly_filtered = monthly_filtered[monthly_filtered['Area'] == area_filter_month]
             
             if not monthly_filtered.empty:
                 report_data = []
@@ -522,6 +529,6 @@ elif menu == "3. Plan Vs Actual Report":
                 st.dataframe(report_df.style.applymap(lambda x: 'color: red' if x < 0 else 'color: green', subset=['Variance']))
                 st.bar_chart(report_df.set_index('Model')[['Planned Qty', 'Actual Qty']])
             else:
-                st.info("No production data found for this month.")
+                st.info("No production data found for this month/area.")
         else:
             st.info("No production data entered yet.")
