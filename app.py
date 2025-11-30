@@ -1,6 +1,8 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
+import calendar
+import math
 
 # --- CONFIGURATION & STATE INITIALIZATION ---
 st.set_page_config(page_title="VOLTAS CR Plant", layout="wide")
@@ -326,6 +328,9 @@ elif menu == "3. Plan Vs Actual Report":
         category = st.selectbox("Select Category", st.session_state.categories, key="wip_category_select")
         wip_date = st.date_input("Select Date for WIP", datetime.now().date(), key="wip_date_grid")
         date_str = wip_date.strftime("%Y-%m-%d")
+        month_str = wip_date.strftime("%Y-%m")
+        # days in month for deriving daily plan from monthly plan when daily plan not present
+        days_in_month = calendar.monthrange(wip_date.year, wip_date.month)[1]
 
         # Areas to display (user requested)
         display_areas = ["Pre-Assembly", "Cabinet Foaming", "CF Final Line"]
@@ -345,17 +350,30 @@ elif menu == "3. Plan Vs Actual Report":
                 models_in_cat = [m for m in st.session_state.models.get(category, []) if st.session_state.active_models.get(m, True)]
                 # daily plans for date (per-model)
                 daily_plan_for_date = st.session_state.daily_plans.get(date_str, {})
+                monthly_plans_for_month = st.session_state.monthly_plans.get(month_str, {})
 
                 # Compute Plan and Actual per display area (sum across models)
                 area_plan = {}
                 area_actual = {}
                 for area in display_areas:
-                    # plan: sum model plan for models in this category for that date if present, else fallback to plan_data daily
+                    # plan: sum model plan for models in this category for that date if present,
+                    # else derive per-day from monthly plan (monthly/days_in_month) if available,
+                    # else fallback to plan_data daily default
                     plan_total = 0
                     for model in models_in_cat:
-                        mplan = daily_plan_for_date.get(model, st.session_state.plan_data.get(model, {}).get('daily', 0))
+                        # prefer explicit daily plan
+                        if model in daily_plan_for_date:
+                            model_daily = daily_plan_for_date.get(model, 0)
+                        # else derive from monthly plan (divide by days in month, round up)
+                        elif model in monthly_plans_for_month:
+                            monthly_value = monthly_plans_for_month.get(model, 0) or 0
+                            # derive a daily estimate from monthly
+                            model_daily = math.ceil(monthly_value / days_in_month) if days_in_month > 0 else 0
+                        else:
+                            model_daily = st.session_state.plan_data.get(model, {}).get('daily', 0) or 0
+                        # add model_daily to area plan (we assume model plan applies to each area equally as fallback)
                         try:
-                            plan_total += int(mplan or 0)
+                            plan_total += int(model_daily)
                         except Exception:
                             plan_total += 0
                     area_plan[area] = plan_total
@@ -379,7 +397,6 @@ elif menu == "3. Plan Vs Actual Report":
                 if plan_wip1 == 0:
                     ach_wip1 = 0.0 if act_wip1 == 0 else 100.0
                 else:
-                    # avoid division by zero and preserve sign for negative plan_wip1
                     ach_wip1 = (act_wip1 / plan_wip1) * 100.0
                 rows.append([f"WIP (Pre-Assembly → Cabinet Foaming)", plan_wip1, act_wip1, ach_wip1])
                 # Row 3: Cabinet Foaming
