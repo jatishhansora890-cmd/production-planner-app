@@ -517,12 +517,14 @@ elif menu == "3. Plan Vs Actual Report":
 
                 # Basic styling for readability (coloring achievement %)
                 def style_daily_row(row):
+                    # IMPORTANT: must return one style string per column in the DataFrame exactly.
+                    # Current model_summary columns order: Model, Area, Act, Plan, Achievement %
                     styles = []
-                    # Model: bold
+                    # Column 0: Model - bold
                     styles.append("font-weight: bold;")
-                    # Plan column: light blue
-                    styles.append("background-color: #e7f3ff; color: #0b5394; font-weight: 600;")
-                    # Act column: green if >= plan, amber if below
+                    # Column 1: Area - neutral/light
+                    styles.append("background-color: #f8f9fa; color: #333333;")
+                    # Column 2: Act - green if >= plan, amber if below, neutral if plan==0
                     plan = row["Plan"]
                     act = row["Act"]
                     if plan > 0:
@@ -534,8 +536,13 @@ elif menu == "3. Plan Vs Actual Report":
                             styles.append("background-color: #fff3cd; color: #856404;")
                     else:
                         styles.append("background-color: #f0f0f0; color: #6c757d;")
-                    # Achievement %
-                    val = float(row["Achievement %"])
+                    # Column 3: Plan - light blue
+                    styles.append("background-color: #e7f3ff; color: #0b5394; font-weight: 600;")
+                    # Column 4: Achievement % - color thresholds
+                    try:
+                        val = float(row["Achievement %"])
+                    except Exception:
+                        val = 0.0
                     if val >= 100:
                         styles.append("background-color: #d4edda; color: #155724; font-weight: 700;")
                     elif val >= 90:
