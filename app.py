@@ -321,7 +321,57 @@ elif menu == "3. Plan Vs Actual Report":
     # --- WIP STATUS ---
     with tab_wip:
         st.subheader("Work In Progress (WIP) Status")
-        st.warning("WIP tracking requires calculating the difference between sequential area outputs. This logic is complex and will be implemented later.")
+        # Allow user to select the date for which WIP should be computed
+        wip_date = st.date_input("Select Date for WIP", datetime.now().date(), key="wip_date")
+        # build dataframe from session
+        daily_df = pd.DataFrame(st.session_state.production_data)
+        if daily_df.empty:
+            st.info("No production data entered yet.")
+        else:
+            daily_df['Report_Date'] = pd.to_datetime(daily_df['Date']).dt.strftime("%Y-%m-%d")
+            filtered = daily_df[daily_df['Report_Date'] == wip_date.strftime("%Y-%m-%d")]
+            if filtered.empty:
+                st.info("No production data found for the selected date.")
+            else:
+                st.markdown("WIP is calculated as the difference between outputs of sequential areas (Area_i - Area_{i+1}). Positive values indicate items present between the two areas.")
+                # We'll compute WIP per model for CF area sequence. WD has only final area so skip.
+                rows = []
+                models_on_date = sorted(filtered['Model'].unique())
+                for model in models_on_date:
+                    # Only meaningful for models that flow through CF_AREAS; skip WD models for CF transitions
+                    # But we'll still attempt to compute outputs for the ordered CF_AREAS list.
+                    outputs = {}
+                    for area in CF_AREAS:
+                        out = filtered[(filtered['Model'] == model) & (filtered['Area'] == area)]['Actual'].sum()
+                        outputs[area] = int(out) if out == out else 0  # ensure int and guard NaN
+                    # compute sequential differences
+                    for i in range(len(CF_AREAS) - 1):
+                        a_from = CF_AREAS[i]
+                        a_to = CF_AREAS[i + 1]
+                        out_from = outputs.get(a_from, 0)
+                        out_to = outputs.get(a_to, 0)
+                        wip_val = out_from - out_to
+                        rows.append({
+                            "Model": model,
+                            "Area From": a_from,
+                            "Area To": a_to,
+                            "Output From": out_from,
+                            "Output To": out_to,
+                            "WIP (From - To)": wip_val
+                        })
+                if rows:
+                    wip_df = pd.DataFrame(rows)
+                    # Show per-model WIP table
+                    st.dataframe(wip_df, hide_index=True)
+                    # Show summary per model: total positive WIP (items waiting) and total negative (downstream > upstream)
+                    summary = wip_df.groupby('Model')['WIP (From - To)'].agg(
+                        Total_WIP=lambda x: x[x > 0].sum(),
+                        Net_WIP=lambda x: x.sum()
+                    ).reset_index().fillna(0)
+                    st.markdown("### WIP Summary")
+                    st.dataframe(summary, hide_index=True)
+                else:
+                    st.info("No sequential area outputs available to compute WIP for this date.")
 
     # --- DAILY ACHIEVEMENT ---
     with tab_daily:
