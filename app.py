@@ -1,4 +1,3 @@
-python name=app.py url=https://github.com/jatishhansora890-cmd/production-planner-app/blob/main/app.py
 import streamlit as st
 import pandas as pd
 from datetime import datetime
@@ -248,5 +247,123 @@ elif menu == "2. Production Entry":
                         "Model": model,
                         "Quantity": production_qty
                     }
-                    st.session_state[f'temp_entries_{
-
+                    st.session_state[f'temp_entries_{area}'].append(entry)
+                    st.success(f"Added {production_qty} units of {model} to list.")
+                else:
+                    st.error("Please enter Supervisor Name and select a Model.")
+                    
+            st.markdown("---")
+
+            # Display temporary list of entries
+            if st.session_state[f'temp_entries_{area}']:
+                st.markdown("**Pending Submissions:**")
+                temp_df = pd.DataFrame(st.session_state[f'temp_entries_{area}'])
+                st.dataframe(temp_df, hide_index=True)
+                
+                # 3. SUBMIT BUTTON
+                if st.form_submit_button("SUBMIT ALL ENTRIES", type="primary"):
+                    if st.session_state[f'temp_entries_{area}']:
+                        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+                        
+                        for entry in st.session_state[f'temp_entries_{area}']:
+                            st.session_state.production_data.append({
+                                "Date": timestamp,
+                                "Area": area,
+                                "Supervisor": entry['Supervisor'],
+                                "Category": entry['Category'],
+                                "Model": entry['Model'],
+                                "Actual": entry['Quantity'],
+                                "Product": "WD"
+                            })
+                        
+                        st.session_state[f'temp_entries_{area}'] = []
+                        st.success(f"✅ All {area} entries submitted successfully!")
+                    else:
+                        st.error("No entries in the list to submit.")
+            else:
+                st.warning("Add entries using the 'Add to List' button before submitting.")
+
+
+# --- MODULE 3: REPORTING (Error Fix needed next) ---
+elif menu == "3. Plan Vs Actual Report":
+    st.header("📊 Production Reports")
+    
+    tab_wip, tab_daily, tab_monthly = st.tabs(["WIP Status", "Daily Achievement", "Monthly Report"])
+
+    # --- WIP STATUS ---
+    with tab_wip:
+        st.subheader("Work In Progress (WIP) Status")
+        st.warning("WIP tracking requires calculating the difference between sequential area outputs. This logic is complex and will be implemented later.")
+
+    # --- DAILY ACHIEVEMENT ---
+    with tab_daily:
+        st.subheader("Daily Achievement Report")
+        
+        report_date = st.date_input("Select Date", datetime.now().date(), key="daily_date")
+        
+        # FIX FOR REPORT DISPLAY: Ensure correct filtering and grouping
+        daily_df = pd.DataFrame(st.session_state.production_data)
+        if not daily_df.empty:
+            daily_df['Report_Date'] = pd.to_datetime(daily_df['Date']).dt.strftime("%Y-%m-%d")
+            filtered_df = daily_df[daily_df['Report_Date'] == report_date.strftime("%Y-%m-%d")]
+            
+            if not filtered_df.empty:
+                # Group by Model and Area for a clear view of daily output across the lines
+                model_summary = filtered_df.groupby(['Model', 'Area'])['Actual'].sum().reset_index()
+                model_summary.rename(columns={'Actual': 'Total Actual Qty'}, inplace=True)
+                st.dataframe(model_summary, hide_index=True)
+
+                st.markdown("#### Daily Production by Model (Total)")
+                # Graph total production per model
+                graph_data = model_summary.groupby('Model')['Total Actual Qty'].sum()
+                st.bar_chart(graph_data)
+            else:
+                st.info("No production data found for this date.")
+        else:
+            st.info("No production data entered yet.")
+
+    # --- MONTHLY REPORT (Error Fix needed next) ---
+    with tab_monthly:
+        st.subheader("Monthly Report (Plan vs Actual)")
+        
+        month_filter = st.date_input("Select Month", datetime.now().date(), format="MM/YYYY", key="monthly_date")
+        month_str = month_filter.strftime("%Y-%m")
+        
+        monthly_df = pd.DataFrame(st.session_state.production_data)
+        if not monthly_df.empty:
+            monthly_df['Report_Month'] = pd.to_datetime(monthly_df['Date']).dt.strftime("%Y-%m")
+            monthly_filtered = monthly_df[monthly_df['Report_Month'] == month_str]
+            
+            if not monthly_filtered.empty:
+                report_data = []
+                
+                for model, plan in st.session_state.plan_data.items():
+                    plan_qty = plan.get('monthly', 0)
+                    
+                    # FIX FOR REPORT DISPLAY: Filter Actual based on Final Lines only
+                    if model in st.session_state.models['Water Dispenser']:
+                        actuals = monthly_filtered[(monthly_filtered['Model'] == model) & (monthly_filtered['Area'] == 'WD Final Line')]['Actual'].sum()
+                    elif model in st.session_state.models['Chest Freezer']:
+                        actuals = monthly_filtered[(monthly_filtered['Model'] == model) & (monthly_filtered['Area'] == 'CF Final Line')]['Actual'].sum()
+                    else:
+                         actuals = 0 # Safety catch for unassigned models
+
+                    report_data.append({
+                        "Model": model,
+                        "Category": monthly_filtered[monthly_filtered['Model'] == model]['Category'].iloc[0] if not monthly_filtered[monthly_filtered['Model'] == model].empty else "N/A",
+                        "Planned Qty": plan_qty,
+                        "Actual Qty": actuals,
+                        "Variance": actuals - plan_qty
+                    })
+
+                report_df = pd.DataFrame(report_data)
+                
+                # Filter out rows where both Planned and Actual are 0 for cleaner report
+                report_df = report_df[(report_df['Planned Qty'] != 0) | (report_df['Actual Qty'] != 0)]
+                
+                st.dataframe(report_df.style.applymap(lambda x: 'color: red' if x < 0 else 'color: green', subset=['Variance']))
+                st.bar_chart(report_df.set_index('Model')[['Planned Qty', 'Actual Qty']])
+            else:
+                st.info("No production data found for this month.")
+        else:
+            st.info("No production data entered yet.")
