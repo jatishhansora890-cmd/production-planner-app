@@ -1,6 +1,7 @@
 # contents of file
 import streamlit as st
 import pandas as pd
+import numpy as np
 from datetime import datetime
 import calendar
 import math
@@ -330,7 +331,7 @@ elif menu == "3. Plan Vs Actual Report":
         wip_date = st.date_input("Select Date for WIP", datetime.now().date(), key="wip_date_grid")
         date_str = wip_date.strftime("%Y-%m-%d")
         month_str = wip_date.strftime("%Y-%m")
-        # days in month for deriving daily plan from monthly plan when daily plan not present
+        # days in month for deriving daily plan from monthly plan when needed
         days_in_month = calendar.monthrange(wip_date.year, wip_date.month)[1]
 
         # Areas to display (user requested)
@@ -349,126 +350,148 @@ elif menu == "3. Plan Vs Actual Report":
             else:
                 # models in category (consider only active)
                 models_in_cat = [m for m in st.session_state.models.get(category, []) if st.session_state.active_models.get(m, True)]
-                # daily plans for date (per-model)
-                daily_plan_for_date = st.session_state.daily_plans.get(date_str, {})
+                # monthly plans for the selected month
                 monthly_plans_for_month = st.session_state.monthly_plans.get(month_str, {})
 
                 # Compute Plan and Actual per display area (sum across models)
+                # PER USER REQUEST: WIP should take the month plan (we use monthly plans).
                 area_plan = {}
                 area_actual = {}
                 for area in display_areas:
-                    # plan: sum model plan for models in this category for that date if present,
-                    # else derive per-day from monthly plan (monthly/days_in_month) if available,
-                    # else fallback to plan_data daily default
-                    plan_total = 0
+                    plan_values = []
                     for model in models_in_cat:
-                        # prefer explicit daily plan
-                        if model in daily_plan_for_date:
-                            model_daily = daily_plan_for_date.get(model, 0)
-                        # else derive from monthly plan (divide by days in month, round up)
-                        elif model in monthly_plans_for_month:
-                            monthly_value = monthly_plans_for_month.get(model, 0) or 0
-                            # derive a daily estimate from monthly
-                            model_daily = math.ceil(monthly_value / days_in_month) if days_in_month > 0 else 0
+                        # Use monthly plan exactly as entered in Monthly Plan tab if available,
+                        # else fall back to model's plan_data['monthly'] if set (keeps behavior sensible).
+                        mon_val = monthly_plans_for_month.get(model, None)
+                        if mon_val is None:
+                            # fallback to default monthly in plan_data (could be 0)
+                            mon_val = st.session_state.plan_data.get(model, {}).get('monthly', None)
+                        # If we have monthly value, convert to daily estimate for WIP grid by dividing by days_in_month.
+                        if mon_val is None or mon_val == "":
+                            # treat as missing plan
+                            plan_values.append(np.nan)
                         else:
-                            model_daily = st.session_state.plan_data.get(model, {}).get('daily', 0) or 0
-                        # add model_daily to area plan (we assume model plan applies to each area equally as fallback)
-                        try:
-                            plan_total += int(model_daily)
-                        except Exception:
-                            plan_total += 0
-                    area_plan[area] = plan_total
+                            try:
+                                # keep fractional daily (don't ceil) for more accurate percentages
+                                model_daily_from_month = float(mon_val) / days_in_month if days_in_month > 0 else np.nan
+                                plan_values.append(model_daily_from_month)
+                            except Exception:
+                                plan_values.append(np.nan)
+                    # sum ignoring NaNs; if all NaN result becomes NaN
+                    if len(plan_values) == 0:
+                        area_plan[area] = np.nan
+                    else:
+                        sum_val = np.nansum(plan_values)
+                        # if all entries were NaN, np.nansum returns 0.0 — detect that case:
+                        if np.all(np.isnan(plan_values)):
+                            area_plan[area] = np.nan
+                        else:
+                            area_plan[area] = sum_val
+
                     # actual:
-                    area_actual[area] = int(filtered[filtered['Area'] == area]['Actual'].sum())
+                    area_actual[area] = filtered[filtered['Area'] == area]['Actual'].sum()
+                    # Convert to numeric and if zero-length treat as 0
+                    try:
+                        area_actual[area] = int(area_actual[area])
+                    except Exception:
+                        area_actual[area] = 0
 
                 # Build the 5-row, 4-column grid as a DataFrame:
-                # Rows in order: Pre-Assembly, WIP (Pre-Assembly→Cabinet Foaming), Cabinet Foaming, WIP (Cabinet Foaming→CF Final Line), CF Final Line
                 rows = []
+                def safe_ach(act, plan):
+                    if pd.isna(plan) or plan == 0:
+                        # if plan is missing -> show NaN so UI displays "N/A"
+                        if pd.isna(plan):
+                            return np.nan
+                        # if plan is zero and actual also zero -> 0%
+                        return 0.0 if act == 0 else 100.0
+                    return (act / plan) * 100.0
+
                 # Row 1: Pre-Assembly
-                plan_pa = area_plan.get("Pre-Assembly", 0)
+                plan_pa = area_plan.get("Pre-Assembly", np.nan)
                 act_pa = area_actual.get("Pre-Assembly", 0)
-                if plan_pa == 0:
-                    ach_pa = 0.0 if act_pa == 0 else 100.0
-                else:
-                    ach_pa = (act_pa / plan_pa) * 100.0
+                ach_pa = safe_ach(act_pa, plan_pa)
                 rows.append(["Pre-Assembly", plan_pa, act_pa, ach_pa])
                 # Row 2: WIP between Pre-Assembly and Cabinet Foaming
-                plan_wip1 = area_plan.get("Pre-Assembly", 0) - area_plan.get("Cabinet Foaming", 0)
-                act_wip1 = area_actual.get("Pre-Assembly", 0) - area_actual.get("Cabinet Foaming", 0)
-                if plan_wip1 == 0:
-                    ach_wip1 = 0.0 if act_wip1 == 0 else 100.0
-                else:
-                    ach_wip1 = (act_wip1 / plan_wip1) * 100.0
+                plan_wip1 = (area_plan.get("Pre-Assembly", np.nan) - area_plan.get("Cabinet Foaming", np.nan)) if not (pd.isna(area_plan.get("Pre-Assembly")) and pd.isna(area_plan.get("Cabinet Foaming"))) else np.nan
+                act_wip1 = act_pa - area_actual.get("Cabinet Foaming", 0)
+                ach_wip1 = safe_ach(act_wip1, plan_wip1)
                 rows.append([f"WIP (Pre-Assembly → Cabinet Foaming)", plan_wip1, act_wip1, ach_wip1])
                 # Row 3: Cabinet Foaming
-                plan_cf = area_plan.get("Cabinet Foaming", 0)
+                plan_cf = area_plan.get("Cabinet Foaming", np.nan)
                 act_cf = area_actual.get("Cabinet Foaming", 0)
-                if plan_cf == 0:
-                    ach_cf = 0.0 if act_cf == 0 else 100.0
-                else:
-                    ach_cf = (act_cf / plan_cf) * 100.0
+                ach_cf = safe_ach(act_cf, plan_cf)
                 rows.append(["Cabinet Foaming", plan_cf, act_cf, ach_cf])
                 # Row 4: WIP between Cabinet Foaming and CF Final Line
-                plan_wip2 = area_plan.get("Cabinet Foaming", 0) - area_plan.get("CF Final Line", 0)
-                act_wip2 = area_actual.get("Cabinet Foaming", 0) - area_actual.get("CF Final Line", 0)
-                if plan_wip2 == 0:
-                    ach_wip2 = 0.0 if act_wip2 == 0 else 100.0
-                else:
-                    ach_wip2 = (act_wip2 / plan_wip2) * 100.0
+                plan_wip2 = (area_plan.get("Cabinet Foaming", np.nan) - area_plan.get("CF Final Line", np.nan)) if not (pd.isna(area_plan.get("Cabinet Foaming")) and pd.isna(area_plan.get("CF Final Line"))) else np.nan
+                act_wip2 = act_cf - area_actual.get("CF Final Line", 0)
+                ach_wip2 = safe_ach(act_wip2, plan_wip2)
                 rows.append([f"WIP (Cabinet Foaming → CF Final Line)", plan_wip2, act_wip2, ach_wip2])
                 # Row 5: CF Final Line
-                plan_final = area_plan.get("CF Final Line", 0)
+                plan_final = area_plan.get("CF Final Line", np.nan)
                 act_final = area_actual.get("CF Final Line", 0)
-                if plan_final == 0:
-                    ach_final = 0.0 if act_final == 0 else 100.0
-                else:
-                    ach_final = (act_final / plan_final) * 100.0
+                ach_final = safe_ach(act_final, plan_final)
                 rows.append(["CF Final Line", plan_final, act_final, ach_final])
 
                 wip_grid = pd.DataFrame(rows, columns=["Production Area", "Plan", "Act", "Achievement %"])
-                # Ensure numeric types for Plan/Act/Achievement
-                wip_grid["Plan"] = pd.to_numeric(wip_grid["Plan"], errors="coerce").fillna(0).astype(int)
-                wip_grid["Act"] = pd.to_numeric(wip_grid["Act"], errors="coerce").fillna(0).astype(int)
-                wip_grid["Achievement %"] = pd.to_numeric(wip_grid["Achievement %"], errors="coerce").fillna(0.0)
 
-                # Styling: color Achievement % and Plan/Act cells for quick visualization
-                def style_row(row):
+                # Styling: must return one style string per column
+                def style_row_wip(row):
+                    styles = []
                     plan = row["Plan"]
                     act = row["Act"]
                     ach = row["Achievement %"]
-                    styles = []
                     # Production Area: bold
                     styles.append("font-weight: bold;")
-                    # Plan: light blue background
-                    styles.append("background-color: #e7f3ff; color: #0b5394; font-weight: 600;")
-                    # Act: light gray or green if >= plan
-                    if plan > 0:
+                    # Plan: blue-ish if present, else grey
+                    if pd.isna(plan):
+                        styles.append("background-color: #f0f0f0; color: #6c757d;")
+                    else:
+                        styles.append("background-color: #e7f3ff; color: #0b5394; font-weight: 600;")
+                    # Act: green if >= plan, amber if below, neutral if plan missing
+                    if not pd.isna(plan) and plan > 0:
                         if act >= plan:
-                            styles.append("background-color: #d4edda; color: #155724; font-weight: 600;")  # green
+                            styles.append("background-color: #d4edda; color: #155724; font-weight: 600;")
                         elif act == 0:
                             styles.append("background-color: #f0f0f0; color: #6c757d;")
                         else:
-                            styles.append("background-color: #fff3cd; color: #856404;")  # amber for below plan
+                            styles.append("background-color: #fff3cd; color: #856404;")
                     else:
-                        # when plan is zero, use neutral background
                         styles.append("background-color: #f0f0f0; color: #6c757d;")
-                    # Achievement %: color based on thresholds
-                    try:
-                        val = float(ach)
-                    except Exception:
-                        val = 0.0
-                    if val >= 100:
-                        styles.append("background-color: #d4edda; color: #155724; font-weight: 700;")
-                    elif val >= 90:
-                        styles.append("background-color: #e2f0d9; color: #155724;")
-                    elif val >= 75:
-                        styles.append("background-color: #fff3cd; color: #856404;")
+                    # Achievement %: color thresholds, treat NaN as neutral
+                    if pd.isna(ach):
+                        styles.append("background-color: #f0f0f0; color: #6c757d;")
                     else:
-                        styles.append("background-color: #f8d7da; color: #721c24;")
+                        try:
+                            val = float(ach)
+                        except Exception:
+                            val = 0.0
+                        if val >= 100:
+                            styles.append("background-color: #d4edda; color: #155724; font-weight: 700;")
+                        elif val >= 90:
+                            styles.append("background-color: #e2f0d9; color: #155724;")
+                        elif val >= 75:
+                            styles.append("background-color: #fff3cd; color: #856404;")
+                        else:
+                            styles.append("background-color: #f8d7da; color: #721c24;")
                     return styles
 
-                styled = wip_grid.style.apply(style_row, axis=1)
-                styled = styled.format({"Achievement %": "{:.1f}%"})
+                styled = wip_grid.style.apply(style_row_wip, axis=1)
+
+                # formatters: show integers for Act, show daily plan rounded (or 'N/A' when NaN), Achievement % as x.x% or 'N/A'
+                def fmt_plan(x):
+                    return "N/A" if pd.isna(x) else f"{int(round(x))}"
+                def fmt_act(x):
+                    return f"{int(x)}"
+                def fmt_ach(x):
+                    return "N/A" if pd.isna(x) else f"{x:.1f}%"
+
+                styled = styled.format({
+                    "Plan": fmt_plan,
+                    "Act": fmt_act,
+                    "Achievement %": fmt_ach
+                })
+
                 st.markdown(f"### WIP Grid for {category} on {date_str}")
                 st.dataframe(styled, hide_index=True)
 
@@ -493,41 +516,48 @@ elif menu == "3. Plan Vs Actual Report":
                 model_summary = filtered_df.groupby(['Model', 'Area'])['Actual'].sum().reset_index()
                 model_summary.rename(columns={'Actual': 'Act'}, inplace=True)
 
-                # Get the per-model plan for the selected date (exactly as entered in Plan tab)
+                # Get the per-model plan for the selected date (exactly as entered in Daily Plan tab).
+                # PER USER REQUEST: Daily report must take plan from daily plan only; if not present show N/A.
                 daily_plan_for_date = st.session_state.daily_plans.get(date_str, {})
+
                 def get_model_plan(model):
-                    # Prefer explicit daily plan entry for the date; else use plan_data default 'daily'
-                    return int(daily_plan_for_date.get(model, st.session_state.plan_data.get(model, {}).get('daily', 0) or 0))
+                    if model in daily_plan_for_date:
+                        try:
+                            return int(daily_plan_for_date.get(model, 0))
+                        except Exception:
+                            return np.nan
+                    # Not present -> show NA (as NaN internally)
+                    return np.nan
 
                 model_summary['Plan'] = model_summary['Model'].apply(get_model_plan)
 
-                # Achievement % column
+                # Achievement % column: if plan is NaN show NaN so formatted as 'N/A'
                 def compute_ach(row):
                     plan = row['Plan']
                     act = row['Act']
+                    if pd.isna(plan):
+                        return np.nan
                     if plan == 0:
                         return 0.0 if act == 0 else 100.0
                     return (act / plan) * 100.0
 
                 model_summary['Achievement %'] = model_summary.apply(compute_ach, axis=1)
-                # Format numbers and style similarly to WIP grid:
-                model_summary["Plan"] = pd.to_numeric(model_summary["Plan"], errors="coerce").fillna(0).astype(int)
+                # Ensure numeric types where applicable
                 model_summary["Act"] = pd.to_numeric(model_summary["Act"], errors="coerce").fillna(0).astype(int)
-                model_summary["Achievement %"] = pd.to_numeric(model_summary["Achievement %"], errors="coerce").fillna(0.0)
+                # Plan may be NaN
+                model_summary["Achievement %"] = pd.to_numeric(model_summary["Achievement %"], errors="coerce")
 
-                # Basic styling for readability (coloring achievement %)
+                # Styling function must return one style string per column (Model, Area, Act, Plan, Achievement %)
                 def style_daily_row(row):
-                    # IMPORTANT: must return one style string per column in the DataFrame exactly.
-                    # Current model_summary columns order: Model, Area, Act, Plan, Achievement %
                     styles = []
-                    # Column 0: Model - bold
+                    # Model - bold
                     styles.append("font-weight: bold;")
-                    # Column 1: Area - neutral/light
+                    # Area - neutral
                     styles.append("background-color: #f8f9fa; color: #333333;")
-                    # Column 2: Act - green if >= plan, amber if below, neutral if plan==0
+                    # Act - colored against plan where plan available
                     plan = row["Plan"]
                     act = row["Act"]
-                    if plan > 0:
+                    if not pd.isna(plan) and plan > 0:
                         if act >= plan:
                             styles.append("background-color: #d4edda; color: #155724; font-weight: 600;")
                         elif act == 0:
@@ -536,25 +566,44 @@ elif menu == "3. Plan Vs Actual Report":
                             styles.append("background-color: #fff3cd; color: #856404;")
                     else:
                         styles.append("background-color: #f0f0f0; color: #6c757d;")
-                    # Column 3: Plan - light blue
-                    styles.append("background-color: #e7f3ff; color: #0b5394; font-weight: 600;")
-                    # Column 4: Achievement % - color thresholds
-                    try:
-                        val = float(row["Achievement %"])
-                    except Exception:
-                        val = 0.0
-                    if val >= 100:
-                        styles.append("background-color: #d4edda; color: #155724; font-weight: 700;")
-                    elif val >= 90:
-                        styles.append("background-color: #e2f0d9; color: #155724;")
-                    elif val >= 75:
-                        styles.append("background-color: #fff3cd; color: #856404;")
+                    # Plan - blue if present, grey if NaN
+                    if pd.isna(plan):
+                        styles.append("background-color: #f0f0f0; color: #6c757d;")
                     else:
-                        styles.append("background-color: #f8d7da; color: #721c24;")
+                        styles.append("background-color: #e7f3ff; color: #0b5394; font-weight: 600;")
+                    # Achievement %
+                    ach = row["Achievement %"]
+                    if pd.isna(ach):
+                        styles.append("background-color: #f0f0f0; color: #6c757d;")
+                    else:
+                        try:
+                            val = float(ach)
+                        except Exception:
+                            val = 0.0
+                        if val >= 100:
+                            styles.append("background-color: #d4edda; color: #155724; font-weight: 700;")
+                        elif val >= 90:
+                            styles.append("background-color: #e2f0d9; color: #155724;")
+                        elif val >= 75:
+                            styles.append("background-color: #fff3cd; color: #856404;")
+                        else:
+                            styles.append("background-color: #f8d7da; color: #721c24;")
                     return styles
 
                 styled_daily = model_summary.style.apply(style_daily_row, axis=1)
-                styled_daily = styled_daily.format({"Achievement %": "{:.1f}%"})
+
+                # Formatters: Plan -> show integer or 'N/A', Achievement % -> x.x% or 'N/A'
+                def fmt_plan(x):
+                    return "N/A" if pd.isna(x) else f"{int(x)}"
+                def fmt_ach(x):
+                    return "N/A" if pd.isna(x) else f"{x:.1f}%"
+
+                styled_daily = styled_daily.format({
+                    "Plan": fmt_plan,
+                    "Act": "{:d}",
+                    "Achievement %": fmt_ach
+                })
+
                 st.markdown(f"### Daily Production for {date_str} (Area: {area_filter})")
                 st.dataframe(styled_daily, hide_index=True)
 
