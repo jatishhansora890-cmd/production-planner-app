@@ -628,24 +628,39 @@ elif menu == "3. Plan Vs Actual Report":
             
             if not monthly_filtered.empty:
                 report_data = []
-                
-                for model, plan in st.session_state.plan_data.items():
-                    plan_qty = plan.get('monthly', 0)
-                    
-                    # Filter Actual based on Final Lines only
+                # prefer monthly plan entered for this month, fallback to plan_data[model]['monthly']
+                monthly_plans_for_month = st.session_state.monthly_plans.get(month_str, {})
+
+                for model in sorted(set(list(st.session_state.plan_data.keys()) + list(monthly_plans_for_month.keys()))):
+                    plan_qty = monthly_plans_for_month.get(model, st.session_state.plan_data.get(model, {}).get('monthly', 0))
+
+                    # Prefer actuals at Final Line for each category first (as before).
+                    # But if final-line actuals are zero (maybe not recorded), fallback to sum of all areas for that model for the month.
                     if model in st.session_state.models.get('Water Dispenser', []):
-                        actuals = monthly_filtered[(monthly_filtered['Model'] == model) & (monthly_filtered['Area'] == 'WD Final Line')]['Actual'].sum()
+                        actuals_final = monthly_filtered[(monthly_filtered['Model'] == model) & (monthly_filtered['Area'] == 'WD Final Line')]['Actual'].sum()
                     elif model in st.session_state.models.get('Chest Freezer', []):
-                        actuals = monthly_filtered[(monthly_filtered['Model'] == model) & (monthly_filtered['Area'] == 'CF Final Line')]['Actual'].sum()
+                        actuals_final = monthly_filtered[(monthly_filtered['Model'] == model) & (monthly_filtered['Area'] == 'CF Final Line')]['Actual'].sum()
                     else:
-                         actuals = 0 # Safety catch for unassigned models
+                        actuals_final = 0
+
+                    # Fallback: if final-line actuals are 0, sum across all areas for that model in the filtered month
+                    if actuals_final == 0:
+                        actuals = monthly_filtered[monthly_filtered['Model'] == model]['Actual'].sum()
+                    else:
+                        actuals = actuals_final
+
+                    # ensure ints
+                    try:
+                        actuals = int(actuals)
+                    except Exception:
+                        actuals = int(actuals or 0)
 
                     report_data.append({
                         "Model": model,
                         "Category": monthly_filtered[monthly_filtered['Model'] == model]['Category'].iloc[0] if not monthly_filtered[monthly_filtered['Model'] == model].empty else "N/A",
-                        "Planned Qty": plan_qty,
+                        "Planned Qty": int(plan_qty or 0),
                         "Actual Qty": actuals,
-                        "Variance": actuals - plan_qty
+                        "Variance": actuals - int(plan_qty or 0)
                     })
 
                 report_df = pd.DataFrame(report_data)
