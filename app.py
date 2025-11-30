@@ -1,3 +1,4 @@
+# contents of file
 import streamlit as st
 import pandas as pd
 from datetime import datetime
@@ -299,8 +300,8 @@ elif menu == "2. Production Entry":
                         for entry in st.session_state[f'temp_entries_{area}']:
                             st.session_state.production_data.append({
                                 "Date": timestamp,
-                                "Area": area,
-                                "Supervisor": entry['Supervisor'],
+                                        "Area": area,
+                                        "Supervisor": entry['Supervisor'],
                                         "Category": entry['Category'],
                                         "Model": entry['Model'],
                                         "Actual": entry['Quantity'],
@@ -476,25 +477,82 @@ elif menu == "3. Plan Vs Actual Report":
         st.subheader("Daily Achievement Report")
         # New filter: Date and Area
         report_date = st.date_input("Select Date", datetime.now().date(), key="daily_date")
+        date_str = report_date.strftime("%Y-%m-%d")
         area_filter = st.selectbox("Select Area", ["All"] + ALL_AREAS, key="daily_area_filter")
         
         # FIX FOR REPORT DISPLAY: Ensure correct filtering and grouping
         daily_df = pd.DataFrame(st.session_state.production_data)
         if not daily_df.empty:
             daily_df['Report_Date'] = pd.to_datetime(daily_df['Date']).dt.strftime("%Y-%m-%d")
-            filtered_df = daily_df[daily_df['Report_Date'] == report_date.strftime("%Y-%m-%d")]
+            filtered_df = daily_df[daily_df['Report_Date'] == date_str]
             if area_filter != "All":
                 filtered_df = filtered_df[filtered_df['Area'] == area_filter]
             
             if not filtered_df.empty:
                 # Group by Model and Area for a clear view of daily output across the lines
                 model_summary = filtered_df.groupby(['Model', 'Area'])['Actual'].sum().reset_index()
-                model_summary.rename(columns={'Actual': 'Total Actual Qty'}, inplace=True)
-                st.dataframe(model_summary, hide_index=True)
+                model_summary.rename(columns={'Actual': 'Act'}, inplace=True)
 
-                st.markdown("#### Daily Production by Model (Total)")
-                # Graph total production per model
-                graph_data = model_summary.groupby('Model')['Total Actual Qty'].sum()
+                # Get the per-model plan for the selected date (exactly as entered in Plan tab)
+                daily_plan_for_date = st.session_state.daily_plans.get(date_str, {})
+                def get_model_plan(model):
+                    # Prefer explicit daily plan entry for the date; else use plan_data default 'daily'
+                    return int(daily_plan_for_date.get(model, st.session_state.plan_data.get(model, {}).get('daily', 0) or 0))
+
+                model_summary['Plan'] = model_summary['Model'].apply(get_model_plan)
+
+                # Achievement % column
+                def compute_ach(row):
+                    plan = row['Plan']
+                    act = row['Act']
+                    if plan == 0:
+                        return 0.0 if act == 0 else 100.0
+                    return (act / plan) * 100.0
+
+                model_summary['Achievement %'] = model_summary.apply(compute_ach, axis=1)
+                # Format numbers and style similarly to WIP grid:
+                model_summary["Plan"] = pd.to_numeric(model_summary["Plan"], errors="coerce").fillna(0).astype(int)
+                model_summary["Act"] = pd.to_numeric(model_summary["Act"], errors="coerce").fillna(0).astype(int)
+                model_summary["Achievement %"] = pd.to_numeric(model_summary["Achievement %"], errors="coerce").fillna(0.0)
+
+                # Basic styling for readability (coloring achievement %)
+                def style_daily_row(row):
+                    styles = []
+                    # Model: bold
+                    styles.append("font-weight: bold;")
+                    # Plan column: light blue
+                    styles.append("background-color: #e7f3ff; color: #0b5394; font-weight: 600;")
+                    # Act column: green if >= plan, amber if below
+                    plan = row["Plan"]
+                    act = row["Act"]
+                    if plan > 0:
+                        if act >= plan:
+                            styles.append("background-color: #d4edda; color: #155724; font-weight: 600;")
+                        elif act == 0:
+                            styles.append("background-color: #f0f0f0; color: #6c757d;")
+                        else:
+                            styles.append("background-color: #fff3cd; color: #856404;")
+                    else:
+                        styles.append("background-color: #f0f0f0; color: #6c757d;")
+                    # Achievement %
+                    val = float(row["Achievement %"])
+                    if val >= 100:
+                        styles.append("background-color: #d4edda; color: #155724; font-weight: 700;")
+                    elif val >= 90:
+                        styles.append("background-color: #e2f0d9; color: #155724;")
+                    elif val >= 75:
+                        styles.append("background-color: #fff3cd; color: #856404;")
+                    else:
+                        styles.append("background-color: #f8d7da; color: #721c24;")
+                    return styles
+
+                styled_daily = model_summary.style.apply(style_daily_row, axis=1)
+                styled_daily = styled_daily.format({"Achievement %": "{:.1f}%"})
+                st.markdown(f"### Daily Production for {date_str} (Area: {area_filter})")
+                st.dataframe(styled_daily, hide_index=True)
+
+                st.markdown("#### Total Actual by Model")
+                graph_data = model_summary.groupby('Model')['Act'].sum()
                 st.bar_chart(graph_data)
             else:
                 st.info("No production data found for this date/area.")
