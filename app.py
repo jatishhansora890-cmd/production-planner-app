@@ -298,11 +298,11 @@ elif menu == "2. Production Entry":
                                 "Date": timestamp,
                                 "Area": area,
                                 "Supervisor": entry['Supervisor'],
-                                "Category": entry['Category'],
-                                "Model": entry['Model'],
-                                "Actual": entry['Quantity'],
-                                "Product": "WD"
-                            })
+                                        "Category": entry['Category'],
+                                        "Model": entry['Model'],
+                                        "Actual": entry['Quantity'],
+                                        "Product": "WD"
+                                    })
                         
                         st.session_state[f'temp_entries_{area}'] = []
                         st.success(f"✅ All {area} entries submitted successfully!")
@@ -318,15 +318,15 @@ elif menu == "3. Plan Vs Actual Report":
     
     tab_wip, tab_daily, tab_monthly = st.tabs(["WIP Status", "Daily Achievement", "Monthly Report"])
 
-    # --- WIP STATUS (Per-request visualization between respective areas) ---
+    # --- WIP STATUS (Between respective areas, simplified grid) ---
     with tab_wip:
-        st.subheader("Work In Progress (WIP) - Between Areas")
-        st.info("Select a category and date. For each model in the category this shows WIP between sequential areas for clearer visualization.")
+        st.subheader("Work In Progress (WIP) - Grid View")
+        st.info("Select a category and date. Grid shows Plan / Actual / Achievement% for areas and WIP between them.")
         category = st.selectbox("Select Category", st.session_state.categories, key="wip_category_select")
-        wip_date = st.date_input("Select Date for WIP", datetime.now().date(), key="wip_date_simple")
+        wip_date = st.date_input("Select Date for WIP", datetime.now().date(), key="wip_date_grid")
         date_str = wip_date.strftime("%Y-%m-%d")
 
-        # Area sequence we visualize WIP for (CF flow)
+        # Areas to display (user requested)
         display_areas = ["Pre-Assembly", "Cabinet Foaming", "CF Final Line"]
 
         # Build a dataframe of production data for the selected date and category
@@ -340,68 +340,56 @@ elif menu == "3. Plan Vs Actual Report":
             if filtered.empty:
                 st.info("No production data for selected category & date.")
             else:
-                models_in_cat = sorted(set(st.session_state.models.get(category, [])))
-                # build rows: for each model, compute actuals per display area and model-level plan
-                rows = []
-                wip_summary_rows = []
+                # models in category (consider only active)
+                models_in_cat = [m for m in st.session_state.models.get(category, []) if st.session_state.active_models.get(m, True)]
+                # daily plans for date (per-model)
                 daily_plan_for_date = st.session_state.daily_plans.get(date_str, {})
 
-                for model in models_in_cat:
-                    if not st.session_state.active_models.get(model, True):
-                        continue  # skip deactivated models
-                    # compute actual per area for this model
-                    actuals_per_area = {}
-                    for area in display_areas:
-                        out = filtered[(filtered['Model'] == model) & (filtered['Area'] == area)]['Actual'].sum()
-                        actuals_per_area[area] = int(out) if out == out else 0
+                # Compute Plan and Actual per display area (sum across models)
+                area_plan = {}
+                area_actual = {}
+                for area in display_areas:
+                    # plan: sum model plan for models in this category for that date if present, else fallback to plan_data daily
+                    plan_total = 0
+                    for model in models_in_cat:
+                        mplan = daily_plan_for_date.get(model, st.session_state.plan_data.get(model, {}).get('daily', 0))
+                        plan_total += int(mplan or 0)
+                    area_plan[area] = plan_total
+                    # actual:
+                    area_actual[area] = int(filtered[filtered['Area'] == area]['Actual'].sum())
 
-                    # model-level plan (daily) preference: daily_plans for date else fallback to plan_data default daily
-                    model_plan = daily_plan_for_date.get(model, st.session_state.plan_data.get(model, {}).get('daily', 0))
+                # Build the 5-row, 4-column grid as a DataFrame:
+                # Rows in order: Pre-Assembly, WIP (Pre-Assembly→Cabinet Foaming), Cabinet Foaming, WIP (Cabinet Foaming→CF Final Line), CF Final Line
+                rows = []
+                # Row 1: Pre-Assembly
+                plan_pa = area_plan.get("Pre-Assembly", 0)
+                act_pa = area_actual.get("Pre-Assembly", 0)
+                ach_pa = "N/A" if plan_pa == 0 else f"{(act_pa/plan_pa*100):.1f}%"
+                rows.append(["Pre-Assembly", plan_pa, act_pa, ach_pa])
+                # Row 2: WIP between Pre-Assembly and Cabinet Foaming
+                plan_wip1 = area_plan.get("Pre-Assembly", 0) - area_plan.get("Cabinet Foaming", 0)
+                act_wip1 = area_actual.get("Pre-Assembly", 0) - area_actual.get("Cabinet Foaming", 0)
+                ach_wip1 = "N/A" if plan_wip1 == 0 else f"{(act_wip1/(plan_wip1)*100):.1f}%"
+                rows.append([f"WIP (Pre-Assembly → Cabinet Foaming)", plan_wip1, act_wip1, ach_wip1])
+                # Row 3: Cabinet Foaming
+                plan_cf = area_plan.get("Cabinet Foaming", 0)
+                act_cf = area_actual.get("Cabinet Foaming", 0)
+                ach_cf = "N/A" if plan_cf == 0 else f"{(act_cf/plan_cf*100):.1f}%"
+                rows.append(["Cabinet Foaming", plan_cf, act_cf, ach_cf])
+                # Row 4: WIP between Cabinet Foaming and CF Final Line
+                plan_wip2 = area_plan.get("Cabinet Foaming", 0) - area_plan.get("CF Final Line", 0)
+                act_wip2 = area_actual.get("Cabinet Foaming", 0) - area_actual.get("CF Final Line", 0)
+                ach_wip2 = "N/A" if plan_wip2 == 0 else f"{(act_wip2/(plan_wip2)*100):.1f}%"
+                rows.append([f"WIP (Cabinet Foaming → CF Final Line)", plan_wip2, act_wip2, ach_wip2])
+                # Row 5: CF Final Line
+                plan_final = area_plan.get("CF Final Line", 0)
+                act_final = area_actual.get("CF Final Line", 0)
+                ach_final = "N/A" if plan_final == 0 else f"{(act_final/plan_final*100):.1f}%"
+                rows.append(["CF Final Line", plan_final, act_final, ach_final])
 
-                    # For each sequential area pair produce a row, with plan/actual for from/to and WIP
-                    for i in range(len(display_areas) - 1):
-                        a_from = display_areas[i]
-                        a_to = display_areas[i + 1]
-                        act_from = actuals_per_area.get(a_from, 0)
-                        act_to = actuals_per_area.get(a_to, 0)
-                        # Since we do not have per-area model plans, we use the model_plan for both sides (consistent fallback)
-                        plan_from = int(model_plan or 0)
-                        plan_to = int(model_plan or 0)
-                        wip_val = act_from - act_to
-                        rows.append({
-                            "Model": model,
-                            "From": a_from,
-                            "To": a_to,
-                            "Plan (From)": plan_from,
-                            "Actual (From)": act_from,
-                            "Plan (To)": plan_to,
-                            "Actual (To)": act_to,
-                            "WIP (From - To)": wip_val
-                        })
-                        wip_summary_rows.append({
-                            "Model": model,
-                            f"WIP {a_from}→{a_to}": wip_val
-                        })
-
-                if not rows:
-                    st.info("No active models with data available for this category/date.")
-                else:
-                    wip_df = pd.DataFrame(rows)
-                    st.markdown(f"### Detailed WIP between areas for {category} on {date_str}")
-                    st.dataframe(wip_df, hide_index=True)
-
-                    # Build a pivoted summary of WIP values per model for visualization
-                    # Combine wip_summary_rows into a single dataframe then pivot
-                    summary_df = pd.DataFrame(wip_summary_rows)
-                    if not summary_df.empty:
-                        # pivot: index Model, columns each pair, values wip
-                        pivot = summary_df.groupby('Model').first().reset_index().set_index('Model')
-                        # Ensure numeric and fill missing with 0
-                        pivot = pivot.fillna(0).astype(int)
-                        st.markdown("### WIP Visualization (per model)")
-                        st.bar_chart(pivot)
-                    else:
-                        st.info("No WIP values to visualize.")
+                wip_grid = pd.DataFrame(rows, columns=["Production Area", "Plan", "Act", "Achievement %"])
+                st.markdown(f"### WIP Grid for {category} on {date_str}")
+                st.dataframe(wip_grid, hide_index=True)
 
     # --- DAILY ACHIEVEMENT ---
     with tab_daily:
