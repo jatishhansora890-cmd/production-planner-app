@@ -170,7 +170,7 @@ elif menu == "2. Production Entry":
                             entry = {
                                 "Supervisor": supervisor_name,
                                 "Category": "Chest Freezer",
-                                st.success(f"✅ All {area} entries submitted successfully!"):
+                                st.success(f"✅ All {area} entries submitted successfully")
                             else:
                                 st.error("No entries in the list to submit.")
                     else:
