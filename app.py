@@ -27,12 +27,18 @@ if 'active_models' not in st.session_state:
         "CF-Model-100": True, "CF-Model-200": True,
         "WD-Model-A": True, "WD-Model-B": True
     }
-# Plan storage: {model_name: {'monthly': qty, 'daily': qty}}
+# Plan storage: maintain backwards-compatible 'monthly' and 'daily' default values per model
 if 'plan_data' not in st.session_state:
     st.session_state.plan_data = {}
     for cat in st.session_state.models:
         for model in st.session_state.models[cat]:
             st.session_state.plan_data[model] = {'monthly': 0, 'daily': 0}
+
+# New: store plans per-month and per-day (indexed by YYYY-MM and YYYY-MM-DD)
+if 'monthly_plans' not in st.session_state:
+    st.session_state.monthly_plans = {}  # { "2025-11": { "CF-Model-100": 120, ... }, ... }
+if 'daily_plans' not in st.session_state:
+    st.session_state.daily_plans = {}    # { "2025-11-30": { "CF-Model-100": 5, ... }, ... }
 
 # CF Area Configuration
 CF_AREAS = ["CRF", "Pre-Assembly", "Cabinet Foaming", "Door Foaming", "CF Final Line"]
@@ -45,7 +51,7 @@ menu = st.radio("Select Module:",
 st.markdown("---")
 
 
-# --- MODULE 4: SETTINGS (unchanged for now) ---
+# --- MODULE 4: SETTINGS ---
 if menu == "4. Settings":
     st.header("⚙️ Settings: Model & Category Management")
     st.info("Use this area to manage Categories and Models that appear in Production Entry.")
@@ -53,22 +59,33 @@ if menu == "4. Settings":
     tab_cat, tab_model, tab_activate = st.tabs(["Manage Categories", "Manage Models", "Activate/Deactivate"])
 
     with tab_cat:
-        st.subheader("Add/Rename Categories")
-        st.warning("Categories are currently locked to 'Chest Freezer' and 'Water Dispenser' for simplicity.")
-        st.write(st.session_state.categories)
+        st.subheader("Add Categories")
+        st.write("Existing categories:", st.session_state.categories)
+        new_cat = st.text_input("New Category Name:")
+        if st.button("Add Category") and new_cat:
+            if new_cat not in st.session_state.categories:
+                st.session_state.categories.append(new_cat)
+                # initialize models list for new category
+                st.session_state.models.setdefault(new_cat, [])
+                st.success(f"Category '{new_cat}' added.")
+            else:
+                st.warning("Category already exists.")
 
     with tab_model:
         st.subheader("Add Models to Category")
-        cat_select = st.selectbox("Select Category", st.session_state.categories, key="model_cat_select")
-        new_model = st.text_input("New Model Name:")
-        if st.button("Add Model") and new_model and cat_select:
-            if new_model not in st.session_state.models.get(cat_select, []):
-                st.session_state.models[cat_select].append(new_model)
-                st.session_state.active_models[new_model] = True
-                st.session_state.plan_data[new_model] = {'monthly': 0, 'daily': 0}
-                st.success(f"Model '{new_model}' added to {cat_select}.")
-            else:
-                st.warning("Model already exists.")
+        if not st.session_state.categories:
+            st.warning("No categories available. Add a category first.")
+        else:
+            cat_select = st.selectbox("Select Category", st.session_state.categories, key="model_cat_select")
+            new_model = st.text_input("New Model Name:")
+            if st.button("Add Model") and new_model and cat_select:
+                if new_model not in st.session_state.models.get(cat_select, []):
+                    st.session_state.models.setdefault(cat_select, []).append(new_model)
+                    st.session_state.active_models[new_model] = True
+                    st.session_state.plan_data[new_model] = {'monthly': 0, 'daily': 0}
+                    st.success(f"Model '{new_model}' added to {cat_select}.")
+                else:
+                    st.warning("Model already exists.")
 
     with tab_activate:
         st.subheader("Activate/Deactivate Models")
@@ -78,7 +95,7 @@ if menu == "4. Settings":
                 is_active = st.checkbox(model, value=st.session_state.active_models.get(model, True), key=f"active_{model}")
                 st.session_state.active_models[model] = is_active
                 
-# --- MODULE 1: PLAN ENTRY (NEW PASSWORD & DAILY FEATURE) ---
+# --- MODULE 1: PLAN ENTRY (PASSWORD PROTECTED) ---
 elif menu == "1. Plan Entry":
     st.header("🗓️ Production Plan Entry")
     
@@ -97,28 +114,38 @@ elif menu == "1. Plan Entry":
             st.subheader("Set Monthly Production Targets")
             monthly_plan_data = {}
             with st.form("monthly_plan_form"):
+                # Allow selecting the month for which the plan applies
+                month_sel = st.date_input("Select Month", datetime.now().date(), format="MM/YYYY", key="monthly_plan_month_picker")
+                month_str = month_sel.strftime("%Y-%m")
                 for model in active_models_list:
                     default_qty = st.session_state.plan_data.get(model, {}).get('monthly', 0)
                     monthly_plan_data[model] = st.number_input(f"Monthly Target for {model}", min_value=0, value=default_qty, key=f"m_plan_{model}")
                 
                 if st.form_submit_button("Save Monthly Plan"):
                     for model, qty in monthly_plan_data.items():
-                        st.session_state.plan_data[model]['monthly'] = qty
-                    st.success("Monthly Plan Saved!")
+                        # update the default/current monthly value (backwards-compatible)
+                        st.session_state.plan_data.setdefault(model, {'monthly': 0, 'daily': 0})['monthly'] = qty
+                        # also save under the selected month
+                        st.session_state.monthly_plans.setdefault(month_str, {})[model] = qty
+                    st.success(f"Monthly Plan Saved for {month_str}!")
                     
         # --- DAILY PLAN ---
         with tab_daily:
             st.subheader("Set Daily Production Targets")
             daily_plan_data = {}
             with st.form("daily_plan_form"):
+                # Allow selecting the date for which the daily plan applies
+                date_sel = st.date_input("Select Date", datetime.now().date(), key="daily_plan_date_picker")
+                date_str = date_sel.strftime("%Y-%m-%d")
                 for model in active_models_list:
                     default_qty = st.session_state.plan_data.get(model, {}).get('daily', 0)
                     daily_plan_data[model] = st.number_input(f"Daily Target for {model}", min_value=0, value=default_qty, key=f"d_plan_{model}")
                 
                 if st.form_submit_button("Save Daily Plan"):
                     for model, qty in daily_plan_data.items():
-                        st.session_state.plan_data[model]['daily'] = qty
-                    st.success("Daily Plan Saved!")
+                        st.session_state.plan_data.setdefault(model, {'monthly': 0, 'daily': 0})['daily'] = qty
+                        st.session_state.daily_plans.setdefault(date_str, {})[model] = qty
+                    st.success(f"Daily Plan Saved for {date_str}!")
                     
     elif password:
         st.error("Incorrect Password")
@@ -284,7 +311,7 @@ elif menu == "2. Production Entry":
                 st.warning("Add entries using the 'Add to List' button before submitting.")
 
 
-# --- MODULE 3: REPORTING (Error Fix needed next) ---
+# --- MODULE 3: REPORTING ---
 elif menu == "3. Plan Vs Actual Report":
     st.header("📊 Production Reports")
     
@@ -322,7 +349,7 @@ elif menu == "3. Plan Vs Actual Report":
         else:
             st.info("No production data entered yet.")
 
-    # --- MONTHLY REPORT (Error Fix needed next) ---
+    # --- MONTHLY REPORT ---
     with tab_monthly:
         st.subheader("Monthly Report (Plan vs Actual)")
         
@@ -340,10 +367,10 @@ elif menu == "3. Plan Vs Actual Report":
                 for model, plan in st.session_state.plan_data.items():
                     plan_qty = plan.get('monthly', 0)
                     
-                    # FIX FOR REPORT DISPLAY: Filter Actual based on Final Lines only
-                    if model in st.session_state.models['Water Dispenser']:
+                    # Filter Actual based on Final Lines only
+                    if model in st.session_state.models.get('Water Dispenser', []):
                         actuals = monthly_filtered[(monthly_filtered['Model'] == model) & (monthly_filtered['Area'] == 'WD Final Line')]['Actual'].sum()
-                    elif model in st.session_state.models['Chest Freezer']:
+                    elif model in st.session_state.models.get('Chest Freezer', []):
                         actuals = monthly_filtered[(monthly_filtered['Model'] == model) & (monthly_filtered['Area'] == 'CF Final Line')]['Actual'].sum()
                     else:
                          actuals = 0 # Safety catch for unassigned models
