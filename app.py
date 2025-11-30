@@ -318,18 +318,18 @@ elif menu == "3. Plan Vs Actual Report":
     
     tab_wip, tab_daily, tab_monthly = st.tabs(["WIP Status", "Daily Achievement", "Monthly Report"])
 
-    # --- WIP STATUS (Simplified per user request) ---
+    # --- WIP STATUS (Per-request visualization between respective areas) ---
     with tab_wip:
-        st.subheader("Work In Progress (WIP) - Simple View")
-        st.info("Select a category and date. Shows Plan / Actual for key CF areas and WIP between sequential areas.")
+        st.subheader("Work In Progress (WIP) - Between Areas")
+        st.info("Select a category and date. For each model in the category this shows WIP between sequential areas for clearer visualization.")
         category = st.selectbox("Select Category", st.session_state.categories, key="wip_category_select")
         wip_date = st.date_input("Select Date for WIP", datetime.now().date(), key="wip_date_simple")
         date_str = wip_date.strftime("%Y-%m-%d")
 
-        # Define the simplified area sequence to display (as requested)
+        # Area sequence we visualize WIP for (CF flow)
         display_areas = ["Pre-Assembly", "Cabinet Foaming", "CF Final Line"]
 
-        # Build a dataframe of production data for the selected date
+        # Build a dataframe of production data for the selected date and category
         prod_df = pd.DataFrame(st.session_state.production_data)
         if prod_df.empty:
             st.info("No production data entered yet.")
@@ -340,50 +340,68 @@ elif menu == "3. Plan Vs Actual Report":
             if filtered.empty:
                 st.info("No production data for selected category & date.")
             else:
-                # Compute Actuals per area (sum across models in the category)
-                actuals = {}
-                for area in display_areas:
-                    actuals[area] = int(filtered[filtered['Area'] == area]['Actual'].sum())
-
-                # Compute Plan per area:
-                # Use daily_plans for the date when available (sum across models in category).
-                # Fallback to plan_data per-model 'daily' default.
-                plans = {}
-                daily_plan_for_date = st.session_state.daily_plans.get(date_str, {})
-                models_in_cat = st.session_state.models.get(category, [])
-                for area in display_areas:
-                    total_plan = 0
-                    for model in models_in_cat:
-                        model_plan = daily_plan_for_date.get(model)
-                        if model_plan is None:
-                            model_plan = st.session_state.plan_data.get(model, {}).get('daily', 0)
-                        total_plan += int(model_plan or 0)
-                    plans[area] = total_plan
-
-                # Compute WIP between sequential areas:
-                # WIP for Pre-Assembly = Actual(Pre-Assembly) - Actual(Cabinet Foaming)
-                # WIP for Cabinet Foaming = Actual(Cabinet Foaming) - Actual(CF Final Line)
-                # CF Final Line: no downstream area shown (WIP left blank)
+                models_in_cat = sorted(set(st.session_state.models.get(category, [])))
+                # build rows: for each model, compute actuals per display area and model-level plan
                 rows = []
-                for i, area in enumerate(display_areas):
-                    plan = plans.get(area, 0)
-                    actual = actuals.get(area, 0)
-                    if i < len(display_areas) - 1:
-                        next_area = display_areas[i + 1]
-                        wip_val = actual - actuals.get(next_area, 0)
-                    else:
-                        wip_val = None  # final area, no WIP displayed per request
-                    rows.append({
-                        "Area": area,
-                        "Planned": plan,
-                        "Actual": actual,
-                        "WIP": wip_val if wip_val is not None else ""
-                    })
+                wip_summary_rows = []
+                daily_plan_for_date = st.session_state.daily_plans.get(date_str, {})
 
-                wip_table = pd.DataFrame(rows)
-                # Display with nicer formatting
-                st.markdown(f"### WIP Summary for {category} on {date_str}")
-                st.dataframe(wip_table, hide_index=True)
+                for model in models_in_cat:
+                    if not st.session_state.active_models.get(model, True):
+                        continue  # skip deactivated models
+                    # compute actual per area for this model
+                    actuals_per_area = {}
+                    for area in display_areas:
+                        out = filtered[(filtered['Model'] == model) & (filtered['Area'] == area)]['Actual'].sum()
+                        actuals_per_area[area] = int(out) if out == out else 0
+
+                    # model-level plan (daily) preference: daily_plans for date else fallback to plan_data default daily
+                    model_plan = daily_plan_for_date.get(model, st.session_state.plan_data.get(model, {}).get('daily', 0))
+
+                    # For each sequential area pair produce a row, with plan/actual for from/to and WIP
+                    for i in range(len(display_areas) - 1):
+                        a_from = display_areas[i]
+                        a_to = display_areas[i + 1]
+                        act_from = actuals_per_area.get(a_from, 0)
+                        act_to = actuals_per_area.get(a_to, 0)
+                        # Since we do not have per-area model plans, we use the model_plan for both sides (consistent fallback)
+                        plan_from = int(model_plan or 0)
+                        plan_to = int(model_plan or 0)
+                        wip_val = act_from - act_to
+                        rows.append({
+                            "Model": model,
+                            "From": a_from,
+                            "To": a_to,
+                            "Plan (From)": plan_from,
+                            "Actual (From)": act_from,
+                            "Plan (To)": plan_to,
+                            "Actual (To)": act_to,
+                            "WIP (From - To)": wip_val
+                        })
+                        wip_summary_rows.append({
+                            "Model": model,
+                            f"WIP {a_from}→{a_to}": wip_val
+                        })
+
+                if not rows:
+                    st.info("No active models with data available for this category/date.")
+                else:
+                    wip_df = pd.DataFrame(rows)
+                    st.markdown(f"### Detailed WIP between areas for {category} on {date_str}")
+                    st.dataframe(wip_df, hide_index=True)
+
+                    # Build a pivoted summary of WIP values per model for visualization
+                    # Combine wip_summary_rows into a single dataframe then pivot
+                    summary_df = pd.DataFrame(wip_summary_rows)
+                    if not summary_df.empty:
+                        # pivot: index Model, columns each pair, values wip
+                        pivot = summary_df.groupby('Model').first().reset_index().set_index('Model')
+                        # Ensure numeric and fill missing with 0
+                        pivot = pivot.fillna(0).astype(int)
+                        st.markdown("### WIP Visualization (per model)")
+                        st.bar_chart(pivot)
+                    else:
+                        st.info("No WIP values to visualize.")
 
     # --- DAILY ACHIEVEMENT ---
     with tab_daily:
