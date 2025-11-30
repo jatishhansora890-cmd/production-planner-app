@@ -175,6 +175,7 @@ elif menu == "2. Production Entry":
                                 st.error("No entries in the list to submit.")
                     else:
                         st.warning("Add entries using the 'Add to List' button before submitting.")
+}
 
     # --- WD ENTRY (Single Tab) ---
     elif product_type == "💧 Water Dispenser":
