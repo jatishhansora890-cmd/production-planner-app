@@ -296,8 +296,8 @@ elif menu == "2. Production Entry":
                         for entry in st.session_state[f'temp_entries_{area}']:
                             st.session_state.production_data.append({
                                 "Date": timestamp,
-                                "Area": area,
-                                "Supervisor": entry['Supervisor'],
+                                        "Area": area,
+                                        "Supervisor": entry['Supervisor'],
                                         "Category": entry['Category'],
                                         "Model": entry['Model'],
                                         "Actual": entry['Quantity'],
@@ -353,7 +353,10 @@ elif menu == "3. Plan Vs Actual Report":
                     plan_total = 0
                     for model in models_in_cat:
                         mplan = daily_plan_for_date.get(model, st.session_state.plan_data.get(model, {}).get('daily', 0))
-                        plan_total += int(mplan or 0)
+                        try:
+                            plan_total += int(mplan or 0)
+                        except Exception:
+                            plan_total += 0
                     area_plan[area] = plan_total
                     # actual:
                     area_actual[area] = int(filtered[filtered['Area'] == area]['Actual'].sum())
@@ -364,32 +367,90 @@ elif menu == "3. Plan Vs Actual Report":
                 # Row 1: Pre-Assembly
                 plan_pa = area_plan.get("Pre-Assembly", 0)
                 act_pa = area_actual.get("Pre-Assembly", 0)
-                ach_pa = "N/A" if plan_pa == 0 else f"{(act_pa/plan_pa*100):.1f}%"
+                # Achievement: if plan == 0 -> show 0.0% when both zero, else show 100% if act>0 (treated as fully achieved/over)
+                if plan_pa == 0:
+                    ach_pa = 0.0 if act_pa == 0 else 100.0
+                else:
+                    ach_pa = (act_pa / plan_pa) * 100.0
                 rows.append(["Pre-Assembly", plan_pa, act_pa, ach_pa])
                 # Row 2: WIP between Pre-Assembly and Cabinet Foaming
                 plan_wip1 = area_plan.get("Pre-Assembly", 0) - area_plan.get("Cabinet Foaming", 0)
                 act_wip1 = area_actual.get("Pre-Assembly", 0) - area_actual.get("Cabinet Foaming", 0)
-                ach_wip1 = "N/A" if plan_wip1 == 0 else f"{(act_wip1/(plan_wip1)*100):.1f}%"
+                # normalize plan_wip1 display (allow negative); achievement calculation:
+                if plan_wip1 == 0:
+                    ach_wip1 = 0.0 if act_wip1 == 0 else 100.0
+                else:
+                    ach_wip1 = (act_wip1 / plan_wip1) * 100.0
                 rows.append([f"WIP (Pre-Assembly → Cabinet Foaming)", plan_wip1, act_wip1, ach_wip1])
                 # Row 3: Cabinet Foaming
                 plan_cf = area_plan.get("Cabinet Foaming", 0)
                 act_cf = area_actual.get("Cabinet Foaming", 0)
-                ach_cf = "N/A" if plan_cf == 0 else f"{(act_cf/plan_cf*100):.1f}%"
+                if plan_cf == 0:
+                    ach_cf = 0.0 if act_cf == 0 else 100.0
+                else:
+                    ach_cf = (act_cf / plan_cf) * 100.0
                 rows.append(["Cabinet Foaming", plan_cf, act_cf, ach_cf])
                 # Row 4: WIP between Cabinet Foaming and CF Final Line
                 plan_wip2 = area_plan.get("Cabinet Foaming", 0) - area_plan.get("CF Final Line", 0)
                 act_wip2 = area_actual.get("Cabinet Foaming", 0) - area_actual.get("CF Final Line", 0)
-                ach_wip2 = "N/A" if plan_wip2 == 0 else f"{(act_wip2/(plan_wip2)*100):.1f}%"
+                if plan_wip2 == 0:
+                    ach_wip2 = 0.0 if act_wip2 == 0 else 100.0
+                else:
+                    ach_wip2 = (act_wip2 / plan_wip2) * 100.0
                 rows.append([f"WIP (Cabinet Foaming → CF Final Line)", plan_wip2, act_wip2, ach_wip2])
                 # Row 5: CF Final Line
                 plan_final = area_plan.get("CF Final Line", 0)
                 act_final = area_actual.get("CF Final Line", 0)
-                ach_final = "N/A" if plan_final == 0 else f"{(act_final/plan_final*100):.1f}%"
+                if plan_final == 0:
+                    ach_final = 0.0 if act_final == 0 else 100.0
+                else:
+                    ach_final = (act_final / plan_final) * 100.0
                 rows.append(["CF Final Line", plan_final, act_final, ach_final])
 
                 wip_grid = pd.DataFrame(rows, columns=["Production Area", "Plan", "Act", "Achievement %"])
+                # Ensure numeric types for Plan/Act/Achievement
+                wip_grid["Plan"] = pd.to_numeric(wip_grid["Plan"], errors="coerce").fillna(0).astype(int)
+                wip_grid["Act"] = pd.to_numeric(wip_grid["Act"], errors="coerce").fillna(0).astype(int)
+                wip_grid["Achievement %"] = pd.to_numeric(wip_grid["Achievement %"], errors="coerce").fillna(0.0)
+
+                # Styling: color Achievement % and Plan/Act cells for quick visualization
+                def style_row(row):
+                    # returns list of style strings for each column in the order of DataFrame columns
+                    plan = row["Plan"]
+                    act = row["Act"]
+                    ach = row["Achievement %"]
+                    styles = []
+                    # Production Area: bold
+                    styles.append("font-weight: bold;")
+                    # Plan: light blue background
+                    styles.append("background-color: #e7f3ff; color: #0b5394; font-weight: 600;")
+                    # Act: light gray or green if >= plan
+                    if act >= plan and plan > 0:
+                        styles.append("background-color: #d4edda; color: #155724; font-weight: 600;")  # green
+                    elif act == 0:
+                        styles.append("background-color: #f0f0f0; color: #6c757d;")
+                    else:
+                        styles.append("background-color: #fff3cd; color: #856404;")  # amber for below plan
+                    # Achievement %: color based on thresholds
+                    try:
+                        val = float(ach)
+                    except Exception:
+                        val = 0.0
+                    if val >= 100:
+                        styles.append("background-color: #d4edda; color: #155724; font-weight: 700;")
+                    elif val >= 90:
+                        styles.append("background-color: #e2f0d9; color: #155724;")
+                    elif val >= 75:
+                        styles.append("background-color: #fff3cd; color: #856404;")
+                    else:
+                        styles.append("background-color: #f8d7da; color: #721c24;")
+                    return styles
+
+                styled = wip_grid.style.apply(style_row, axis=1)
+                # Format Achievement column to show one decimal and a percent sign
+                styled = styled.format({"Achievement %": "{:.1f}%"})
                 st.markdown(f"### WIP Grid for {category} on {date_str}")
-                st.dataframe(wip_grid, hide_index=True)
+                st.dataframe(styled, hide_index=True)
 
     # --- DAILY ACHIEVEMENT ---
     with tab_daily:
