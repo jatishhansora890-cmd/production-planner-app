@@ -115,7 +115,8 @@ elif menu == "1. Plan Entry":
             monthly_plan_data = {}
             with st.form("monthly_plan_form"):
                 # Allow selecting the month for which the plan applies
-                month_sel = st.date_input("Select Month", datetime.now().date(), format="MM/YYYY", key="monthly_plan_month_picker")
+                # NOTE: Streamlit's date_input needs a full date; we accept a date and store YYYY-MM
+                month_sel = st.date_input("Select Month", datetime.now().date(), key="monthly_plan_month_picker")
                 month_str = month_sel.strftime("%Y-%m")
                 for model in active_models_list:
                     default_qty = st.session_state.plan_data.get(model, {}).get('monthly', 0)
@@ -353,7 +354,8 @@ elif menu == "3. Plan Vs Actual Report":
     with tab_monthly:
         st.subheader("Monthly Report (Plan vs Actual)")
         
-        month_filter = st.date_input("Select Month", datetime.now().date(), format="MM/YYYY", key="monthly_date")
+        # Use a full date picker but extract YYYY-MM for monthly filtering
+        month_filter = st.date_input("Select Month", datetime.now().date(), key="monthly_date")
         month_str = month_filter.strftime("%Y-%m")
         
         monthly_df = pd.DataFrame(st.session_state.production_data)
