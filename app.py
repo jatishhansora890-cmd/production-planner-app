@@ -326,12 +326,12 @@ elif menu == "3. Plan Vs Actual Report":
     # --- WIP STATUS (Grid View) ---
     with tab_wip:
         st.subheader("Work In Progress (WIP) - Grid View")
-        st.info("Select a category and date. Grid shows Plan / Actual / Achievement% for areas and WIP between them.")
+        st.info("Select a category and date. Grid shows Plan (monthly), Actual (daily) and Achievement% (actual vs monthly-per-day equivalent).")
         category = st.selectbox("Select Category", st.session_state.categories, key="wip_category_select")
         wip_date = st.date_input("Select Date for WIP", datetime.now().date(), key="wip_date_grid")
         date_str = wip_date.strftime("%Y-%m-%d")
         month_str = wip_date.strftime("%Y-%m")
-        # days in month for deriving daily plan from monthly plan when needed
+        # days in month for deriving per-day equivalent when computing achievement %
         days_in_month = calendar.monthrange(wip_date.year, wip_date.month)[1]
 
         # Areas to display (user requested)
@@ -353,104 +353,100 @@ elif menu == "3. Plan Vs Actual Report":
                 # monthly plans for the selected month
                 monthly_plans_for_month = st.session_state.monthly_plans.get(month_str, {})
 
-                # Compute Plan and Actual per display area (sum across models)
-                # PER USER REQUEST: WIP should take the month plan (we use monthly plans).
+                # Compute Plan (monthly total as entered) and Actual (daily) per display area (sum across models)
                 area_plan = {}
                 area_actual = {}
                 for area in display_areas:
                     plan_values = []
                     for model in models_in_cat:
                         # Use monthly plan exactly as entered in Monthly Plan tab if available,
-                        # else fall back to model's plan_data['monthly'] if set (keeps behavior sensible).
+                        # else fall back to model's plan_data['monthly'] if set
                         mon_val = monthly_plans_for_month.get(model, None)
                         if mon_val is None:
-                            # fallback to default monthly in plan_data (could be 0)
                             mon_val = st.session_state.plan_data.get(model, {}).get('monthly', None)
-                        # If we have monthly value, convert to daily estimate for WIP grid by dividing by days_in_month.
-                        if mon_val is None or mon_val == "":
-                            # treat as missing plan
+                        if mon_val is None:
                             plan_values.append(np.nan)
                         else:
                             try:
-                                # keep fractional daily (don't ceil) for more accurate percentages
-                                model_daily_from_month = float(mon_val) / days_in_month if days_in_month > 0 else np.nan
-                                plan_values.append(model_daily_from_month)
+                                plan_values.append(float(mon_val))
                             except Exception:
                                 plan_values.append(np.nan)
                     # sum ignoring NaNs; if all NaN result becomes NaN
                     if len(plan_values) == 0:
                         area_plan[area] = np.nan
                     else:
-                        sum_val = np.nansum(plan_values)
-                        # if all entries were NaN, np.nansum returns 0.0 — detect that case:
                         if np.all(np.isnan(plan_values)):
                             area_plan[area] = np.nan
                         else:
-                            area_plan[area] = sum_val
+                            area_plan[area] = float(np.nansum(plan_values))
 
-                    # actual:
-                    area_actual[area] = filtered[filtered['Area'] == area]['Actual'].sum()
-                    # Convert to numeric and if zero-length treat as 0
-                    try:
-                        area_actual[area] = int(area_actual[area])
-                    except Exception:
-                        area_actual[area] = 0
+                    # actual for the day
+                    area_actual[area] = int(filtered[filtered['Area'] == area]['Actual'].sum())
 
-                # Build the 5-row, 4-column grid as a DataFrame:
+                # Build the 5-row, 4-column grid:
                 rows = []
-                def safe_ach(act, plan):
-                    if pd.isna(plan) or plan == 0:
-                        # if plan is missing -> show NaN so UI displays "N/A"
-                        if pd.isna(plan):
-                            return np.nan
-                        # if plan is zero and actual also zero -> 0%
+                def ach_vs_monthly_per_day(act, monthly_plan):
+                    # monthly_plan is monthly total (or NaN). Convert to per-day equivalent for achievement calculation.
+                    if pd.isna(monthly_plan):
+                        return np.nan
+                    per_day = monthly_plan / days_in_month if days_in_month > 0 else np.nan
+                    if per_day == 0:
                         return 0.0 if act == 0 else 100.0
-                    return (act / plan) * 100.0
+                    return (act / per_day) * 100.0
 
                 # Row 1: Pre-Assembly
                 plan_pa = area_plan.get("Pre-Assembly", np.nan)
                 act_pa = area_actual.get("Pre-Assembly", 0)
-                ach_pa = safe_ach(act_pa, plan_pa)
+                ach_pa = ach_vs_monthly_per_day(act_pa, plan_pa)
                 rows.append(["Pre-Assembly", plan_pa, act_pa, ach_pa])
-                # Row 2: WIP between Pre-Assembly and Cabinet Foaming
-                plan_wip1 = (area_plan.get("Pre-Assembly", np.nan) - area_plan.get("Cabinet Foaming", np.nan)) if not (pd.isna(area_plan.get("Pre-Assembly")) and pd.isna(area_plan.get("Cabinet Foaming"))) else np.nan
+                # Row 2: WIP between Pre-Assembly and Cabinet Foaming (monthly-plan difference)
+                plan_wip1 = np.nan
+                if not (pd.isna(area_plan.get("Pre-Assembly")) and pd.isna(area_plan.get("Cabinet Foaming"))):
+                    a1 = area_plan.get("Pre-Assembly")
+                    a2 = area_plan.get("Cabinet Foaming")
+                    plan_wip1 = np.nan if (pd.isna(a1) and pd.isna(a2)) else ( (0.0 if pd.isna(a1) else a1) - (0.0 if pd.isna(a2) else a2) )
                 act_wip1 = act_pa - area_actual.get("Cabinet Foaming", 0)
-                ach_wip1 = safe_ach(act_wip1, plan_wip1)
+                ach_wip1 = ach_vs_monthly_per_day(act_wip1, plan_wip1)
                 rows.append([f"WIP (Pre-Assembly → Cabinet Foaming)", plan_wip1, act_wip1, ach_wip1])
                 # Row 3: Cabinet Foaming
                 plan_cf = area_plan.get("Cabinet Foaming", np.nan)
                 act_cf = area_actual.get("Cabinet Foaming", 0)
-                ach_cf = safe_ach(act_cf, plan_cf)
+                ach_cf = ach_vs_monthly_per_day(act_cf, plan_cf)
                 rows.append(["Cabinet Foaming", plan_cf, act_cf, ach_cf])
                 # Row 4: WIP between Cabinet Foaming and CF Final Line
-                plan_wip2 = (area_plan.get("Cabinet Foaming", np.nan) - area_plan.get("CF Final Line", np.nan)) if not (pd.isna(area_plan.get("Cabinet Foaming")) and pd.isna(area_plan.get("CF Final Line"))) else np.nan
+                plan_wip2 = np.nan
+                if not (pd.isna(area_plan.get("Cabinet Foaming")) and pd.isna(area_plan.get("CF Final Line"))):
+                    a1 = area_plan.get("Cabinet Foaming")
+                    a2 = area_plan.get("CF Final Line")
+                    plan_wip2 = np.nan if (pd.isna(a1) and pd.isna(a2)) else ( (0.0 if pd.isna(a1) else a1) - (0.0 if pd.isna(a2) else a2) )
                 act_wip2 = act_cf - area_actual.get("CF Final Line", 0)
-                ach_wip2 = safe_ach(act_wip2, plan_wip2)
+                ach_wip2 = ach_vs_monthly_per_day(act_wip2, plan_wip2)
                 rows.append([f"WIP (Cabinet Foaming → CF Final Line)", plan_wip2, act_wip2, ach_wip2])
                 # Row 5: CF Final Line
                 plan_final = area_plan.get("CF Final Line", np.nan)
                 act_final = area_actual.get("CF Final Line", 0)
-                ach_final = safe_ach(act_final, plan_final)
+                ach_final = ach_vs_monthly_per_day(act_final, plan_final)
                 rows.append(["CF Final Line", plan_final, act_final, ach_final])
 
-                wip_grid = pd.DataFrame(rows, columns=["Production Area", "Plan", "Act", "Achievement %"])
+                wip_grid = pd.DataFrame(rows, columns=["Production Area", "Plan (Monthly)", "Act (Day)", "Achievement %"])
 
-                # Styling: must return one style string per column
+                # Styling: one style string per column
                 def style_row_wip(row):
                     styles = []
-                    plan = row["Plan"]
-                    act = row["Act"]
+                    plan = row["Plan (Monthly)"]
+                    act = row["Act (Day)"]
                     ach = row["Achievement %"]
                     # Production Area: bold
                     styles.append("font-weight: bold;")
-                    # Plan: blue-ish if present, else grey
+                    # Plan: blue if present else grey
                     if pd.isna(plan):
                         styles.append("background-color: #f0f0f0; color: #6c757d;")
                     else:
                         styles.append("background-color: #e7f3ff; color: #0b5394; font-weight: 600;")
-                    # Act: green if >= plan, amber if below, neutral if plan missing
+                    # Act: colored relative to per-day equivalent (if plan present)
                     if not pd.isna(plan) and plan > 0:
-                        if act >= plan:
+                        per_day = plan / days_in_month if days_in_month > 0 else 0
+                        if act >= per_day and per_day > 0:
                             styles.append("background-color: #d4edda; color: #155724; font-weight: 600;")
                         elif act == 0:
                             styles.append("background-color: #f0f0f0; color: #6c757d;")
@@ -458,7 +454,7 @@ elif menu == "3. Plan Vs Actual Report":
                             styles.append("background-color: #fff3cd; color: #856404;")
                     else:
                         styles.append("background-color: #f0f0f0; color: #6c757d;")
-                    # Achievement %: color thresholds, treat NaN as neutral
+                    # Achievement %: color thresholds, NaN neutral
                     if pd.isna(ach):
                         styles.append("background-color: #f0f0f0; color: #6c757d;")
                     else:
@@ -478,7 +474,7 @@ elif menu == "3. Plan Vs Actual Report":
 
                 styled = wip_grid.style.apply(style_row_wip, axis=1)
 
-                # formatters: show integers for Act, show daily plan rounded (or 'N/A' when NaN), Achievement % as x.x% or 'N/A'
+                # Formatters
                 def fmt_plan(x):
                     return "N/A" if pd.isna(x) else f"{int(round(x))}"
                 def fmt_act(x):
@@ -487,8 +483,8 @@ elif menu == "3. Plan Vs Actual Report":
                     return "N/A" if pd.isna(x) else f"{x:.1f}%"
 
                 styled = styled.format({
-                    "Plan": fmt_plan,
-                    "Act": fmt_act,
+                    "Plan (Monthly)": fmt_plan,
+                    "Act (Day)": fmt_act,
                     "Achievement %": fmt_ach
                 })
 
@@ -517,7 +513,7 @@ elif menu == "3. Plan Vs Actual Report":
                 model_summary.rename(columns={'Actual': 'Act'}, inplace=True)
 
                 # Get the per-model plan for the selected date (exactly as entered in Daily Plan tab).
-                # PER USER REQUEST: Daily report must take plan from daily plan only; if not present show N/A.
+                # PER USER REQUEST: Daily report must take plan from daily plan only; if not present show NA.
                 daily_plan_for_date = st.session_state.daily_plans.get(date_str, {})
 
                 def get_model_plan(model):
