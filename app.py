@@ -383,7 +383,7 @@ elif menu == "3. Plan Vs Actual Report":
                     # actual for the day
                     area_actual[area] = int(filtered[filtered['Area'] == area]['Actual'].sum())
 
-                # Build the 5-row, 4-column grid:
+                # Build the 5-row, 3-column grid:
                 rows = []
                 def ach_vs_monthly_per_day(act, monthly_plan):
                     # monthly_plan is monthly total (or NaN). Convert to per-day equivalent for achievement calculation.
@@ -397,8 +397,7 @@ elif menu == "3. Plan Vs Actual Report":
                 # Row 1: Pre-Assembly
                 plan_pa = area_plan.get("Pre-Assembly", np.nan)
                 act_pa = area_actual.get("Pre-Assembly", 0)
-                ach_pa = ach_vs_monthly_per_day(act_pa, plan_pa)
-                rows.append(["Pre-Assembly", plan_pa, act_pa, ach_pa])
+                rows.append(["Pre-Assembly", plan_pa, act_pa])
                 # Row 2: WIP between Pre-Assembly and Cabinet Foaming (monthly-plan difference)
                 plan_wip1 = np.nan
                 if not (pd.isna(area_plan.get("Pre-Assembly")) and pd.isna(area_plan.get("Cabinet Foaming"))):
@@ -406,13 +405,11 @@ elif menu == "3. Plan Vs Actual Report":
                     a2 = area_plan.get("Cabinet Foaming")
                     plan_wip1 = np.nan if (pd.isna(a1) and pd.isna(a2)) else ( (0.0 if pd.isna(a1) else a1) - (0.0 if pd.isna(a2) else a2) )
                 act_wip1 = act_pa - area_actual.get("Cabinet Foaming", 0)
-                ach_wip1 = ach_vs_monthly_per_day(act_wip1, plan_wip1)
-                rows.append([f"WIP (Pre-Assembly → Cabinet Foaming)", plan_wip1, act_wip1, ach_wip1])
+                rows.append([f"WIP (Pre-Assembly → Cabinet Foaming)", plan_wip1, act_wip1])
                 # Row 3: Cabinet Foaming
                 plan_cf = area_plan.get("Cabinet Foaming", np.nan)
                 act_cf = area_actual.get("Cabinet Foaming", 0)
-                ach_cf = ach_vs_monthly_per_day(act_cf, plan_cf)
-                rows.append(["Cabinet Foaming", plan_cf, act_cf, ach_cf])
+                rows.append(["Cabinet Foaming", plan_cf, act_cf])
                 # Row 4: WIP between Cabinet Foaming and CF Final Line
                 plan_wip2 = np.nan
                 if not (pd.isna(area_plan.get("Cabinet Foaming")) and pd.isna(area_plan.get("CF Final Line"))):
@@ -420,22 +417,19 @@ elif menu == "3. Plan Vs Actual Report":
                     a2 = area_plan.get("CF Final Line")
                     plan_wip2 = np.nan if (pd.isna(a1) and pd.isna(a2)) else ( (0.0 if pd.isna(a1) else a1) - (0.0 if pd.isna(a2) else a2) )
                 act_wip2 = act_cf - area_actual.get("CF Final Line", 0)
-                ach_wip2 = ach_vs_monthly_per_day(act_wip2, plan_wip2)
-                rows.append([f"WIP (Cabinet Foaming → CF Final Line)", plan_wip2, act_wip2, ach_wip2])
+                rows.append([f"WIP (Cabinet Foaming → CF Final Line)", plan_wip2, act_wip2])
                 # Row 5: CF Final Line
                 plan_final = area_plan.get("CF Final Line", np.nan)
                 act_final = area_actual.get("CF Final Line", 0)
-                ach_final = ach_vs_monthly_per_day(act_final, plan_final)
-                rows.append(["CF Final Line", plan_final, act_final, ach_final])
+                rows.append(["CF Final Line", plan_final, act_final])
 
-                wip_grid = pd.DataFrame(rows, columns=["Production Area", "Plan (Monthly)", "Act (Day)", "Achievement %"])
+                wip_grid = pd.DataFrame(rows, columns=["Production Area", "Plan (Monthly)", "Act (Day)"])
 
                 # Styling: one style string per column
                 def style_row_wip(row):
                     styles = []
                     plan = row["Plan (Monthly)"]
                     act = row["Act (Day)"]
-                    ach = row["Achievement %"]
                     # Production Area: bold
                     styles.append("font-weight: bold;")
                     # Plan: blue if present else grey
@@ -454,22 +448,6 @@ elif menu == "3. Plan Vs Actual Report":
                             styles.append("background-color: #fff3cd; color: #856404;")
                     else:
                         styles.append("background-color: #f0f0f0; color: #6c757d;")
-                    # Achievement %: color thresholds, NaN neutral
-                    if pd.isna(ach):
-                        styles.append("background-color: #f0f0f0; color: #6c757d;")
-                    else:
-                        try:
-                            val = float(ach)
-                        except Exception:
-                            val = 0.0
-                        if val >= 100:
-                            styles.append("background-color: #d4edda; color: #155724; font-weight: 700;")
-                        elif val >= 90:
-                            styles.append("background-color: #e2f0d9; color: #155724;")
-                        elif val >= 75:
-                            styles.append("background-color: #fff3cd; color: #856404;")
-                        else:
-                            styles.append("background-color: #f8d7da; color: #721c24;")
                     return styles
 
                 styled = wip_grid.style.apply(style_row_wip, axis=1)
@@ -479,13 +457,10 @@ elif menu == "3. Plan Vs Actual Report":
                     return "N/A" if pd.isna(x) else f"{int(round(x))}"
                 def fmt_act(x):
                     return f"{int(x)}"
-                def fmt_ach(x):
-                    return "N/A" if pd.isna(x) else f"{x:.1f}%"
 
                 styled = styled.format({
                     "Plan (Monthly)": fmt_plan,
-                    "Act (Day)": fmt_act,
-                    "Achievement %": fmt_ach
+                    "Act (Day)": fmt_act
                 })
 
                 st.markdown(f"### WIP Grid for {category} on {date_str}")
